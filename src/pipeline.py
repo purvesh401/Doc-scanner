@@ -56,6 +56,10 @@ class DocumentScannerPipeline:
             detected_corners = detected_corners - pad
             detected_corners[:, 0] = np.clip(detected_corners[:, 0], 0, frame.shape[1] - 1)
             detected_corners[:, 1] = np.clip(detected_corners[:, 1], 0, frame.shape[0] - 1)
+        elif is_static_image:
+            # Fallback for full-bleed documents where the image itself is the cropped document
+            h_f, w_f = frame.shape[:2]
+            detected_corners = np.array([[0.0, 0.0], [w_f - 1.0, 0.0], [w_f - 1.0, h_f - 1.0], [0.0, h_f - 1.0]], dtype=np.float32)
             
         # 4. Temporal Corner Stabilization (EMA motion gating)
         stabilized_corners = self.stabilizer.update(detected_corners)

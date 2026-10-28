@@ -28,8 +28,8 @@ def is_valid_quadrilateral(approx, frame_shape, min_area_ratio=0.08, max_area_ra
     """
     Validates whether a 4-point polygon is a plausible physical document:
     1. Must be convex.
-    2. Area must be within acceptable bounds (not tiny clutter, not full camera frame).
-    3. Interior angles must be within plausible perspective range (40° to 140°).
+    2. Area must be within acceptable bounds (not tiny clutter).
+    3. Interior angles must be within plausible perspective range (35° to 145°).
     """
     if len(approx) != 4:
         return False

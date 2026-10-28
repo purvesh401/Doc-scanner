@@ -13,6 +13,7 @@ class VerificationEngine:
     def __init__(self, templates_dir="templates"):
         self.templates_dir = templates_dir
         self.orb = cv2.ORB_create(nfeatures=500, fastThreshold=15)
+        self.knn_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         
         self.stamp_template = None
@@ -70,10 +71,12 @@ class VerificationEngine:
     def verify_stamp(self, extracted_stamp_bgr):
         """
         Verifies extracted red stamp against reference template:
-        1. Computes ORB keypoints and descriptors.
-        2. Matches with Brute-Force Matcher.
-        3. Computes normalized cross-correlation peak score.
-        4. Returns confidence percentage, decision, and match visualization image.
+        1. Scale-normalizes extracted stamp.
+        2. Computes ORB keypoints and descriptors.
+        3. Matches using Lowe's Ratio Test (k=2).
+        4. Validates geometric planar consistency via RANSAC.
+        5. Computes normalized cross-correlation peak score.
+        6. Returns strict confidence percentage, decision, and inlier match visualization.
         """
         if self.stamp_des is None or extracted_stamp_bgr is None:
             return {'verified': False, 'score': 0.0, 'good_matches': 0, 'ncc_score': 0.0, 'vis': None}
@@ -85,40 +88,58 @@ class VerificationEngine:
         stamp_normalized = cv2.resize(stamp_gray, (w_t, h_t), interpolation=cv2.INTER_CUBIC)
         
         kp, des = self.orb.detectAndCompute(stamp_normalized, None)
-        
         if des is None or len(des) < 5:
             return {'verified': False, 'score': 0.0, 'good_matches': 0, 'ncc_score': 0.0, 'vis': None}
             
-        # 1. Feature matching via ORB
-        matches = self.matcher.match(self.stamp_des, des)
-        # Sort matches by Hamming distance
-        matches = sorted(matches, key=lambda x: x.distance)
-        
-        # Good matches have low Hamming distance (< 52)
-        good_matches = [m for m in matches if m.distance < 52]
-        
-        # 2. Template cross-correlation score (using canonical normalized size)
+        # 1. Lowe's Ratio Test (k=2 nearest neighbors)
+        raw_matches = self.knn_matcher.knnMatch(self.stamp_des, des, k=2)
+        good_matches = []
+        for m_pair in raw_matches:
+            if len(m_pair) == 2:
+                m, n = m_pair
+                if m.distance < 0.78 * n.distance and m.distance < 48:
+                    good_matches.append(m)
+                    
+        # 2. Geometric Homography Verification (RANSAC)
+        inliers = 0
+        inliers_mask = None
+        if len(good_matches) >= 4:
+            src_pts = np.float32([self.stamp_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            _, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 15.0)
+            if mask is not None:
+                inliers = int(np.sum(mask))
+                inliers_mask = mask.ravel().tolist()
+                
+        # 3. Template cross-correlation score (using canonical normalized size)
         res = cv2.matchTemplate(stamp_normalized, self.stamp_gray, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         ncc_score = max(0.0, float(max_val))
         
-        # Combined confidence metric
-        match_score = min(1.0, len(good_matches) / 22.0)
-        confidence = float(np.clip((match_score * 0.70 + ncc_score * 0.30) * 100.0, 0.0, 99.9))
-        is_verified = bool(len(good_matches) >= 10 or confidence >= 50.0)
-        
-        # 3. Create visual matching plot
+        # 4. Strict Combined Confidence Metric
+        if inliers < 8:
+            confidence = float(np.clip(inliers * 2.0 + len(good_matches) * 1.0 + ncc_score * 15.0, 0.0, 25.0))
+            is_verified = False
+        else:
+            inlier_score = min(1.0, inliers / 30.0)
+            confidence = float(np.clip((inlier_score * 0.70 + ncc_score * 0.30) * 100.0, 0.0, 99.9))
+            is_verified = bool(inliers >= 10 and confidence >= 50.0)
+            
+        # 5. Visual matching plot (draw only inliers if present)
+        matches_to_draw = good_matches[:30]
+        mask_to_draw = inliers_mask[:30] if inliers_mask is not None else None
         vis = cv2.drawMatches(
             self.stamp_template, self.stamp_kp,
-            extracted_stamp_bgr, kp,
-            good_matches[:25], None,
+            cv2.cvtColor(stamp_normalized, cv2.COLOR_GRAY2BGR), kp,
+            matches_to_draw, None,
+            matchesMask=mask_to_draw,
             flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
         )
         
         return {
             'verified': is_verified,
             'score': round(confidence, 1),
-            'good_matches': len(good_matches),
+            'good_matches': inliers if inliers > 0 else len(good_matches),
             'ncc_score': round(ncc_score, 2),
             'vis': vis
         }
@@ -126,10 +147,12 @@ class VerificationEngine:
     def verify_signature(self, extracted_sig_bgr):
         """
         Verifies extracted blue signature against authorized reference template:
-        1. Computes ORB keypoints and descriptors on scale-normalized signature.
-        2. Matches with Brute-Force Hamming distance matcher.
-        3. Computes normalized cross-correlation peak score.
-        4. Returns confidence percentage, decision, and match visualization plot.
+        1. Scale-normalizes extracted signature.
+        2. Computes ORB keypoints and descriptors.
+        3. Matches using Lowe's Ratio Test (k=2).
+        4. Validates stroke geometric consistency via RANSAC.
+        5. Computes normalized cross-correlation peak score.
+        6. Returns strict confidence percentage, decision, and inlier correspondence plot.
         """
         if self.sig_des is None or extracted_sig_bgr is None:
             return {'verified': False, 'score': 0.0, 'good_matches': 0, 'ncc_score': 0.0, 'vis': None}
@@ -144,33 +167,57 @@ class VerificationEngine:
         if des is None or len(des) < 5:
             return {'verified': False, 'score': 0.0, 'good_matches': 0, 'ncc_score': 0.0, 'vis': None}
             
-        # 1. Feature matching via ORB
-        matches = self.matcher.match(self.sig_des, des)
-        matches = sorted(matches, key=lambda x: x.distance)
-        good_matches = [m for m in matches if m.distance < 55]
-        
-        # 2. Template cross-correlation score
+        # 1. Lowe's Ratio Test (k=2 nearest neighbors)
+        raw_matches = self.knn_matcher.knnMatch(self.sig_des, des, k=2)
+        good_matches = []
+        for m_pair in raw_matches:
+            if len(m_pair) == 2:
+                m, n = m_pair
+                if m.distance < 0.75 * n.distance and m.distance < 45:
+                    good_matches.append(m)
+                    
+        # 2. Geometric Homography Verification (RANSAC)
+        inliers = 0
+        inliers_mask = None
+        if len(good_matches) >= 4:
+            src_pts = np.float32([self.sig_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            _, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 15.0)
+            if mask is not None:
+                inliers = int(np.sum(mask))
+                inliers_mask = mask.ravel().tolist()
+                
+        # 3. Template cross-correlation score
         res = cv2.matchTemplate(sig_normalized, self.sig_gray, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         ncc_score = max(0.0, float(max_val))
         
-        # Combined confidence metric
-        match_score = min(1.0, len(good_matches) / 18.0)
-        confidence = float(np.clip((match_score * 0.70 + ncc_score * 0.30) * 100.0, 0.0, 99.9))
-        is_verified = bool(len(good_matches) >= 8 or confidence >= 45.0)
-        
-        # 3. Create visual matching correspondence plot
+        # 4. Strict Combined Confidence Metric:
+        # A true signature MUST have geometric inliers (>= 6) AND reasonable NCC.
+        # Different signatures have inliers < 5 and NCC < 0.15 -> capped at < 22%.
+        if inliers < 5:
+            confidence = float(np.clip(inliers * 2.5 + len(good_matches) * 1.5 + ncc_score * 15.0, 0.0, 22.0))
+            is_verified = False
+        else:
+            inlier_score = min(1.0, inliers / 20.0)
+            confidence = float(np.clip((inlier_score * 0.70 + ncc_score * 0.30) * 100.0, 0.0, 99.9))
+            is_verified = bool(inliers >= 8 and confidence >= 45.0)
+            
+        # 5. Visual matching correspondence plot (draw only inliers if present)
+        matches_to_draw = good_matches[:25]
+        mask_to_draw = inliers_mask[:25] if inliers_mask is not None else None
         vis = cv2.drawMatches(
             self.sig_template, self.sig_kp,
             cv2.cvtColor(sig_normalized, cv2.COLOR_GRAY2BGR), kp,
-            good_matches[:25], None,
+            matches_to_draw, None,
+            matchesMask=mask_to_draw,
             flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
         )
         
         return {
             'verified': is_verified,
             'score': round(confidence, 1),
-            'good_matches': len(good_matches),
+            'good_matches': inliers if inliers > 0 else len(good_matches),
             'ncc_score': round(ncc_score, 2),
             'vis': vis
         }
