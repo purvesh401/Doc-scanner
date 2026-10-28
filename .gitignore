@@ -1,0 +1,68 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# Operating System specific
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Run-time scan exports (preserve output directory via .gitkeep)
+output/scan_*
+output/*.png
+output/*.jpg
+output/*.jpeg
+!output/.gitkeep
+
+# Temporary scratch and test files
+scratch/
+*.tmp
+*.log
+
+# Private local evaluation guides and generator (kept local for sharing via WhatsApp)
+Project_Demonstration_Guide.pdf
+Viva_Defense_and_Algorithmic_Evaluation_Guide.pdf
+generate_academic_pdfs.py
+presentation_and_viva_defense_guide.md
+clarity_and_verification_report.md

@@ -1,152 +1,366 @@
+"""
+Real-Time Document Scanner and Chromatic Verification Mark Extractor
+MSU Baroda - 7th Semester B.Tech CSE Computer Vision Project
+
+Dual-Mode Operation:
+1. Live Camera Stream Mode (Webcam, DroidCam/Iriun phone camera, or IP stream at 30+ FPS)
+2. Uploaded Phone Image Mode (Opens any pre-taken smartphone JPG/PNG from WhatsApp/Gallery)
+"""
+
 import sys
+import os
+import glob
+import argparse
 import cv2
 import numpy as np
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                               QHBoxLayout, QLabel, QPushButton, QComboBox, QSizePolicy)
-from PySide6.QtCore import QTimer, Qt, Slot
-from PySide6.QtGui import QImage, QPixmap
+
+# Native file dialog for picking uploaded images with one click
+import tkinter as tk
+from tkinter import filedialog
 
 from src.camera import Camera
-from src.pipeline import process_pipeline
+from src.pipeline import DocumentScannerPipeline
+from src.dashboard import render_multi_viewport_hud
 from src.exporter import save_capture
 
-class ScannerApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Real-Time Document Scanner")
-        self.setGeometry(100, 100, 1000, 600)
-        
-        self.camera = Camera(0)
-        
-        self.frozen_data = None
-        self.is_frozen = False
-        
-        self.setup_ui()
-        
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)
+def on_trackbar_change(val):
+    """Callback for trackbar events."""
+    pass
 
-    def setup_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        main_layout = QVBoxLayout(central_widget)
-        
-        # Image views
-        views_layout = QHBoxLayout()
-        
-        # Live view
-        self.live_label = QLabel("Live Feed")
-        self.live_label.setAlignment(Qt.AlignCenter)
-        self.live_label.setStyleSheet("border: 1px solid black;")
-        self.live_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.live_label.setMinimumSize(320, 240)
-        views_layout.addWidget(self.live_label)
-        
-        # Scanned view
-        self.scan_label = QLabel("Scanned Document")
-        self.scan_label.setAlignment(Qt.AlignCenter)
-        self.scan_label.setStyleSheet("border: 1px solid black;")
-        self.scan_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.scan_label.setMinimumSize(320, 240)
-        views_layout.addWidget(self.scan_label)
-        
-        main_layout.addLayout(views_layout)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        
-        self.camera_selector = QComboBox()
-        self.camera_selector.addItems(["Camera 0", "Camera 1", "Camera 2", "Camera 3"])
-        self.camera_selector.currentIndexChanged.connect(self.change_camera)
-        controls_layout.addWidget(QLabel("Select Camera:"))
-        controls_layout.addWidget(self.camera_selector)
-        
-        self.btn_capture = QPushButton("Capture Photo")
-        self.btn_capture.clicked.connect(self.toggle_capture)
-        controls_layout.addWidget(self.btn_capture)
-        
-        self.btn_save = QPushButton("Save Outputs")
-        self.btn_save.clicked.connect(self.save_photo)
-        self.btn_save.setEnabled(False)
-        controls_layout.addWidget(self.btn_save)
-        
-        main_layout.addLayout(controls_layout)
+def setup_calibration_window():
+    """Creates an interactive GUI panel for live parameter tuning during professor demonstrations."""
+    win_name = "Interactive CV Calibrator"
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(win_name, 450, 280)
+    
+    cv2.createTrackbar("Bilateral Filter", win_name, 1, 1, on_trackbar_change)
+    cv2.createTrackbar("Blue Hue Min", win_name, 95, 180, on_trackbar_change)
+    cv2.createTrackbar("Blue Hue Max", win_name, 138, 180, on_trackbar_change)
+    cv2.createTrackbar("Red Hue Wrap", win_name, 10, 30, on_trackbar_change)
+    cv2.createTrackbar("Min Ink Sat", win_name, 25, 255, on_trackbar_change)
+    cv2.createTrackbar("Adaptive C", win_name, 10, 25, on_trackbar_change)
+    return win_name
 
-    def update_frame(self):
-        if self.is_frozen:
-            return
-            
-        frame = self.camera.read_frame()
-        if frame is None:
-            self.live_label.setText("Error reading camera frame. Trying to reconnect...")
-            return
-            
-        self.frozen_data = process_pipeline(frame)
+def select_image_file():
+    """Opens a native Windows File Dialog to select any phone photo or WhatsApp image."""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        file_path = filedialog.askopenfilename(
+            title="Select Phone Document Image (JPG / PNG)",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.webp"), ("All files", "*.*")]
+        )
+        root.destroy()
+        return file_path if file_path else None
+    except Exception as e:
+        print(f"[!] File dialog error: {e}")
+        return None
+
+def main():
+    parser = argparse.ArgumentParser(description="MSU Real-Time Document Scanner & Mark Extractor")
+    parser.add_argument("--image", default=None, help="Path to an uploaded mobile phone document photo (JPG/PNG)")
+    parser.add_argument("--source", default="0", help="Camera index (0, 1, 2), IP URL, or image file path")
+    args = parser.parse_args()
+
+    print("=" * 70)
+    print("  REAL-TIME DOCUMENT SCANNER & CHROMATIC VERIFICATION MARK EXTRACTOR")
+    print("  The Maharaja Sayajirao University of Baroda - Department of CSE")
+    print("=" * 70)
+    
+    pipeline = DocumentScannerPipeline(templates_dir="templates")
+    os.makedirs("uploads", exist_ok=True)
+    
+    # Determine initial operating mode: Image File vs. Camera Stream
+    target_image_path = None
+    if args.image and os.path.isfile(args.image):
+        target_image_path = args.image
+    elif os.path.isfile(args.source):
+        target_image_path = args.source
         
-        # Draw corners if found
-        display_frame = frame.copy()
-        if self.frozen_data['corners'] is not None:
-            cv2.drawContours(display_frame, [self.frozen_data['corners'].reshape(-1, 1, 2).astype(int)], -1, (0, 255, 0), 2)
-            
-        self.set_image(self.live_label, display_frame)
-        
-        if self.frozen_data['warped'] is not None:
-            self.set_image(self.scan_label, self.frozen_data['warped'])
+    camera = None
+    using_camera = False
+    current_image = None
+    mode_name = "CAMERA"
+    scan_mode = 0  # 0: Magic Color, 1: Clean Gray, 2: Photocopy B&W
+    
+    if target_image_path is not None:
+        current_image = cv2.imread(target_image_path)
+        if current_image is not None:
+            print(f"[+] Loaded Uploaded Phone Image: {target_image_path} (Shape: {current_image.shape})")
+            mode_name = "UPLOADED_IMAGE"
         else:
-            self.scan_label.setText("No document detected")
+            print(f"[!] Failed to decode image: {target_image_path}")
             
-    def set_image(self, label, img):
-        if img is None:
-            return
-            
-        # Ensure memory is contiguous for PySide6 to read it safely
-        img = np.ascontiguousarray(img)
+    if current_image is None:
+        # Camera Mode
+        initial_source = int(args.source) if args.source.isdigit() else args.source
+        camera = Camera(initial_source)
+        test_frame = camera.read_frame()
         
-        if len(img.shape) == 3:
-            h, w, ch = img.shape
-            bytes_per_line = ch * w
-            img_format = QImage.Format_BGR888
+        # If specified camera index returned no frame, auto-scan for working cameras
+        if test_frame is None and isinstance(initial_source, int):
+            from src.camera import find_available_cameras
+            avail = find_available_cameras()
+            if avail:
+                camera = Camera(avail[0])
+                test_frame = camera.read_frame()
+                print(f"[+] Auto-detected active hardware camera at index {avail[0]}.")
+        
+        sample_paths = [
+            "samples/sample_webcam_scene.png",
+            "samples/sample_angled_scene.png",
+            "samples/canonical_document.png"
+        ]
+        sample_images = [cv2.imread(p) for p in sample_paths if os.path.exists(p)]
+        
+        if test_frame is not None:
+            using_camera = True
+            print(f"[+] Live Camera source active.")
         else:
-            h, w = img.shape
-            bytes_per_line = w
-            img_format = QImage.Format_Grayscale8
+            print(f"[!] Camera source unavailable. Launching in Offline Demo Mode.")
+            current_image = sample_images[0]
+            mode_name = "SAMPLE_DEMO"
             
-        q_img = QImage(img.data, w, h, bytes_per_line, img_format)
-        label.setPixmap(QPixmap.fromImage(q_img).scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-
-    @Slot()
-    def toggle_capture(self):
-        self.is_frozen = not self.is_frozen
-        if self.is_frozen:
-            self.btn_capture.setText("Resume Camera")
-            self.btn_save.setEnabled(True)
+    hud_window = "MSU Real-Time Document Scanner - Multi-Viewport Diagnostic HUD"
+    cv2.namedWindow(hud_window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(hud_window, 1200, 820)
+    
+    calib_window = None
+    show_calibration = False
+    is_frozen = False
+    frozen_state = None
+    show_verification_plot = False
+    
+    print("\n[CONTROLS]")
+    print("  [O]           : Open Image File (Native Windows File Picker for Phone/WhatsApp Photos)")
+    print("  [E]           : Toggle Viewport 3 Mode (Clean Razor-Sharp Scan vs. High-Contrast B&W)")
+    print("  [U]           : Load Next Image from uploads/ folder")
+    print("  [SPACE] / [C] : Freeze / Unfreeze Capture")
+    print("  [S]           : Save Rectified Scans & Verification Artifacts to output/")
+    print("  [T]           : Toggle Interactive Calibration Trackbars")
+    print("  [V]           : Toggle Detailed Stamp Feature Matching Plot")
+    print("  [0] / [1] / [2]: Switch Scenes (0: Straight Desk, 1: Angled Desk, 2: Severe Perspective)")
+    print("  [9] / [K]     : Load Native Canonical High-Res Document (samples/canonical_document.png)")
+    print("  [P]           : Connect Phone Camera over Wi-Fi (Enter DroidCam IP)")
+    print("  [3]           : Switch to Built-in Laptop Webcam")
+    print("  [4]           : Switch to External USB / Virtual Camera")
+    print("  [R]           : Reset Stabilizer Tracking History")
+    print("  [Q] / [ESC]   : Exit Application\n")
+    
+    while True:
+        # 1. Acquire Frame
+        if not is_frozen:
+            if using_camera and camera is not None:
+                frame = camera.read_frame()
+                if frame is None:
+                    print("[!] Camera read error. Falling back to uploaded/sample image.")
+                    using_camera = False
+                    frame = current_image if current_image is not None else cv2.imread("samples/sample_webcam_scene.png")
+            else:
+                frame = current_image.copy()
+                
+            # 2. Execute Computer Vision Pipeline (High-res 1200px for uploaded photos, 35+ FPS for video)
+            is_static = (mode_name == "UPLOADED_IMAGE" or not using_camera)
+            current_state = pipeline.process_frame(frame, run_verification=True, is_static_image=is_static)
+            if mode_name == "UPLOADED_IMAGE":
+                current_state['status'] = f"UPLOADED: {current_state['status']}"
+            frozen_state = current_state
         else:
-            self.btn_capture.setText("Capture Photo")
-            self.btn_save.setEnabled(False)
+            current_state = frozen_state
             
-    @Slot()
-    def save_photo(self):
-        if self.frozen_data:
-            saved = save_capture(self.frozen_data)
-            print(f"Saved {len(saved)} files.")
+        # 3. Render 4-Viewport Diagnostic HUD
+        hud_display = render_multi_viewport_hud(
+            current_state,
+            target_size=(1160, 780),
+            scan_mode=scan_mode,
+            templates_dir="templates"
+        )
+        
+        # Overlay banner if Frozen
+        if is_frozen:
+            cv2.rectangle(hud_display, (420, 15), (740, 55), (0, 0, 180), -1)
+            cv2.putText(hud_display, "[CAPTURE FROZEN - PRESS 'S' TO SAVE]", (435, 42),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+                        
+        cv2.imshow(hud_window, hud_display)
+        
+        # 4. Show Verification Match Plot if requested
+        if show_verification_plot:
+            v_data = current_state.get('verification')
+            if v_data and v_data.get('stamp') and v_data['stamp'].get('vis') is not None:
+                cv2.imshow("ORB Stamp Feature Matching Analysis", v_data['stamp']['vis'])
+            else:
+                blank = np.zeros((300, 500, 3), dtype=np.uint8)
+                cv2.putText(blank, "No Stamp Extracted For Matching", (60, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 120), 1)
+                cv2.imshow("ORB Stamp Feature Matching Analysis", blank)
+                
+        # 5. Handle Keyboard Controls
+        key = cv2.waitKey(20) & 0xFF
+        
+        if key == ord('q') or key == 27:  # Q or ESC
+            break
             
-    @Slot(int)
-    def change_camera(self, index):
-        self.timer.stop()
-        self.camera.open_camera(index)
-        self.is_frozen = False
-        self.btn_capture.setText("Capture Photo")
-        self.btn_save.setEnabled(False)
-        self.timer.start(30)
-
-    def closeEvent(self, event):
-        self.camera.release()
-        super().closeEvent(event)
+        elif key == ord('o'):  # Open Image File via Windows Dialog
+            chosen_file = select_image_file()
+            if chosen_file:
+                loaded = cv2.imread(chosen_file)
+                if loaded is not None:
+                    current_image = loaded
+                    using_camera = False
+                    is_frozen = False
+                    mode_name = "UPLOADED_IMAGE"
+                    pipeline.reset_stabilizer()
+                    print(f"\n[+] Successfully opened phone photo: {chosen_file}")
+                    print("    -> Detecting paper boundaries, unwarping perspective, cleaning shadows, and verifying seal...")
+                else:
+                    print(f"[!] Could not decode selected file: {chosen_file}")
+                    
+        elif key == ord('e'):  # Cycle Viewport 3 scan mode
+            scan_mode = (scan_mode + 1) % 3
+            modes_labels = ["Magic Color (Shadow-Free Full Color)", "Clean Grayscale (Unsharp Edge Sharpened)", "Photocopy B&W Binary"]
+            print(f"[*] Viewport 3 Mode: {modes_labels[scan_mode]}")
+            
+        elif key == ord('u'):  # Load Next Image from uploads/ directory
+            upload_files = glob.glob("uploads/*.jpg") + glob.glob("uploads/*.png") + glob.glob("uploads/*.jpeg")
+            if upload_files:
+                chosen = upload_files[0]
+                current_image = cv2.imread(chosen)
+                using_camera = False
+                is_frozen = False
+                mode_name = "UPLOADED_IMAGE"
+                pipeline.reset_stabilizer()
+                print(f"[+] Loaded from uploads/: {chosen}")
+            else:
+                print("[!] No images found in uploads/ folder. Place your phone photos in the uploads/ directory.")
+                
+        elif key == ord(' ') or key == ord('c'):  # Freeze / Capture
+            is_frozen = not is_frozen
+            print(f"[*] Capture state: {'FROZEN' if is_frozen else 'LIVE TRACKING'}")
+            
+        elif key == ord('s'):  # Save Outputs
+            if frozen_state is not None:
+                target_dir, files = save_capture(frozen_state)
+                print(f"[+] Successfully exported {len(files)} scan artifacts to: {target_dir}")
+                cv2.putText(hud_display, "SAVED TO OUTPUT!", (50, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                cv2.imshow(hud_window, hud_display)
+                cv2.waitKey(500)
+                
+        elif key == ord('t'):  # Toggle Calibration Window
+            show_calibration = not show_calibration
+            if show_calibration:
+                calib_window = setup_calibration_window()
+            else:
+                if calib_window:
+                    cv2.destroyWindow(calib_window)
+                    calib_window = None
+                    
+        elif key == ord('v'):  # Toggle Detailed ORB Plot
+            show_verification_plot = not show_verification_plot
+            if not show_verification_plot:
+                cv2.destroyWindow("ORB Stamp Feature Matching Analysis")
+                
+        elif key == ord('0'):  # Sample 0 (Straight Front-Facing Document)
+            using_camera = False
+            current_image = cv2.imread("samples/sample_straight_scene.png")
+            is_frozen = False
+            mode_name = "SAMPLE_DEMO"
+            pipeline.reset_stabilizer()
+            print("[*] Switched to Sample Scene 0 (Straight / Front-Facing Bird's-Eye View)")
+            
+        elif key == ord('1'):  # Sample 1
+            using_camera = False
+            current_image = cv2.imread("samples/sample_webcam_scene.png")
+            is_frozen = False
+            mode_name = "SAMPLE_DEMO"
+            pipeline.reset_stabilizer()
+            print("[*] Switched to Sample Scene 1 (Normal Perspective)")
+            
+        elif key == ord('2'):  # Sample 2
+            using_camera = False
+            current_image = cv2.imread("samples/sample_angled_scene.png")
+            is_frozen = False
+            mode_name = "SAMPLE_DEMO"
+            pipeline.reset_stabilizer()
+            print("[*] Switched to Sample Scene 2 (Severe Angled Perspective)")
+            
+        elif key == ord('9') or key == ord('k'):  # Canonical High-Res Document
+            using_camera = False
+            current_image = cv2.imread("samples/canonical_document.png")
+            is_frozen = False
+            mode_name = "UPLOADED_IMAGE"
+            pipeline.reset_stabilizer()
+            print("[*] Switched to Canonical High-Res Academic Document (samples/canonical_document.png)")
+            
+        elif key == ord('3'):  # Auto-Detect / Switch to Laptop Webcam
+            from src.camera import find_available_cameras
+            avail = find_available_cameras()
+            if avail:
+                cam_idx = avail[0]
+                if camera is None:
+                    camera = Camera(cam_idx)
+                else:
+                    camera.open_camera(cam_idx)
+                using_camera = True
+                is_frozen = False
+                mode_name = "CAMERA"
+                pipeline.reset_stabilizer()
+                print(f"[*] Switched to Laptop Webcam (Camera Index {cam_idx})")
+            else:
+                print("[!] No active hardware webcam found.")
+                
+        elif key == ord('4'):  # Switch to External / Phone Camera (DroidCam / Iriun)
+            from src.camera import find_available_cameras
+            avail = find_available_cameras()
+            cam_idx = avail[1] if len(avail) > 1 else (avail[0] if avail else 1)
+            if camera is None:
+                camera = Camera(cam_idx)
+            else:
+                camera.open_camera(cam_idx)
+            using_camera = True
+            is_frozen = False
+            mode_name = "CAMERA"
+            pipeline.reset_stabilizer()
+            print(f"[*] Switched to Camera Index {cam_idx} (DroidCam / Phone / External)")
+                
+        elif key == ord('p'):  # Connect Phone Camera via DroidCam Wi-Fi IP
+            import tkinter as tk
+            from tkinter import simpledialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            phone_ip = simpledialog.askstring("DroidCam Connection", "Enter Phone IP from DroidCam screen (e.g. 192.168.1.15):", parent=root)
+            root.destroy()
+            if phone_ip:
+                phone_ip = phone_ip.strip()
+                if not phone_ip.startswith("http"):
+                    stream_url = f"http://{phone_ip}:4747/video" if ":4747" not in phone_ip else f"http://{phone_ip}/video"
+                else:
+                    stream_url = phone_ip
+                if camera is None:
+                    camera = Camera(stream_url)
+                else:
+                    camera.open_camera(stream_url)
+                if camera.read_frame() is not None:
+                    using_camera = True
+                    is_frozen = False
+                    mode_name = "CAMERA"
+                    pipeline.reset_stabilizer()
+                    print(f"[+] Successfully connected to Phone: {stream_url}")
+                else:
+                    print(f"[!] Could not connect to {stream_url}. Ensure phone and laptop are on same Wi-Fi.")
+                    
+        elif key == ord('r'):  # Reset Stabilizer
+            pipeline.reset_stabilizer()
+            print("[*] Stabilizer history reset.")
+            
+    # Cleanup
+    if using_camera and camera is not None:
+        camera.release()
+    cv2.destroyAllWindows()
+    print("[+] Application terminated cleanly.")
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = ScannerApp()
-    window.show()
-    sys.exit(app.exec())
+    main()
