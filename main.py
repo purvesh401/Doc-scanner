@@ -140,6 +140,8 @@ def main():
     print("  [S]           : Save Rectified Scans & Verification Artifacts to output/")
     print("  [T]           : Toggle Interactive Calibration Trackbars")
     print("  [V]           : Toggle Detailed Stamp Feature Matching Plot")
+    print("  [A]           : Enroll / Register Current Physical Marks as Authorized Templates")
+    print("  [D]           : Restore Default MSU Reference Templates")
     print("  [0] / [1] / [2]: Switch Scenes (0: Straight Desk, 1: Angled Desk, 2: Severe Perspective)")
     print("  [9] / [K]     : Load Native Canonical High-Res Document (samples/canonical_document.png)")
     print("  [P]           : Connect Phone Camera over Wi-Fi (Enter DroidCam IP)")
@@ -261,6 +263,39 @@ def main():
             show_verification_plot = not show_verification_plot
             if not show_verification_plot:
                 cv2.destroyWindow("ORB Stamp Feature Matching Analysis")
+                
+        elif key == ord('a'):  # Enroll Current Extracted Marks as Reference Templates
+            state_to_use = frozen_state if is_frozen else current_state
+            if state_to_use and state_to_use.get('color_data'):
+                cd = state_to_use['color_data']
+                stamp_crop = None
+                sig_crop = None
+                if cd.get('red_boxes') and cd.get('red_marks') is not None:
+                    largest_red = max(cd['red_boxes'], key=lambda b: b[4])
+                    x, y, w, h, _ = largest_red
+                    pad = 10
+                    x1, y1 = max(0, x - pad), max(0, y - pad)
+                    x2, y2 = min(cd['red_marks'].shape[1], x + w + pad), min(cd['red_marks'].shape[0], y + h + pad)
+                    stamp_crop = cd['red_marks'][y1:y2, x1:x2]
+                if cd.get('blue_boxes') and cd.get('blue_marks') is not None:
+                    largest_blue = max(cd['blue_boxes'], key=lambda b: b[4])
+                    x, y, w, h, _ = largest_blue
+                    pad = 10
+                    x1, y1 = max(0, x - pad), max(0, y - pad)
+                    x2, y2 = min(cd['blue_marks'].shape[1], x + w + pad), min(cd['blue_marks'].shape[0], y + h + pad)
+                    sig_crop = cd['blue_marks'][y1:y2, x1:x2]
+                    
+                if stamp_crop is not None or sig_crop is not None:
+                    pipeline.verifier.register_template_from_crop(stamp_crop, sig_crop)
+                    print("[+] ENROLLED: Current physical marks registered as Authorized Reference Specimens!")
+                else:
+                    print("[!] No blue signature or red stamp detected in current view to enroll.")
+            else:
+                print("[!] No rectified document available to enroll templates.")
+
+        elif key == ord('d'):  # Restore Default MSU Reference Templates
+            pipeline.verifier.restore_default_templates()
+            print("[*] Restored default MSU Department reference templates.")
                 
         elif key == ord('0'):  # Sample 0 (Straight Front-Facing Document)
             using_camera = False

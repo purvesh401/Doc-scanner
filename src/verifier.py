@@ -42,6 +42,31 @@ class VerificationEngine:
             self.sig_gray = cv2.cvtColor(self.sig_template, cv2.COLOR_BGR2GRAY)
             self.sig_kp, self.sig_des = self.orb.detectAndCompute(self.sig_gray, None)
 
+    def register_template_from_crop(self, stamp_crop=None, sig_crop=None):
+        """
+        Dynamically enrolls a new stamp/signature as the reference template
+        directly from live physical document crops.
+        """
+        if stamp_crop is not None:
+            stamp_path = os.path.join(self.templates_dir, "official_stamp_template.png")
+            cv2.imwrite(stamp_path, stamp_crop)
+        if sig_crop is not None:
+            sig_path = os.path.join(self.templates_dir, "authorized_signature_template.png")
+            cv2.imwrite(sig_path, sig_crop)
+        self._load_templates()
+
+    def restore_default_templates(self):
+        """Restores the default university specimen templates from default_msu/."""
+        import shutil
+        default_dir = os.path.join(self.templates_dir, "default_msu")
+        if os.path.exists(default_dir):
+            for fname in ["official_stamp_template.png", "authorized_signature_template.png"]:
+                src_f = os.path.join(default_dir, fname)
+                dst_f = os.path.join(self.templates_dir, fname)
+                if os.path.exists(src_f):
+                    shutil.copy2(src_f, dst_f)
+        self._load_templates()
+
     def verify_stamp(self, extracted_stamp_bgr):
         """
         Verifies extracted red stamp against reference template:

@@ -95,6 +95,8 @@ python main.py --image uploads/test_phone_document.jpg
 | **`[S]`** | **Save High-Res Scan** | Exports print-ready $1400 \times 1979$ artifacts + `metadata.json` to `output/` |
 | **`[T]`** | **Calibration Trackbars** | Interactive sliders for real-time Canny and HSV tuning |
 | **`[V]`** | **Feature Match Plot** | Dedicated window showing ORB keypoint correspondence lines |
+| **`[A]`** | **Enroll Live Mark** | Enrolls current document's blue signature & red stamp as authorized specimen |
+| **`[D]`** | **Restore Defaults** | Restores default MSU Department reference templates |
 | **`[R]`** | **Reset Stabilizer** | Clears EMA tracking memory for instant re-detection |
 | **`[Q]`** / **`[ESC]`** | **Quit Application** | Gracefully releases camera and closes all windows |
 
